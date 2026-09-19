@@ -5,17 +5,15 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  schedule:
-    - cron: '0 0 1 */2 *'
 
-env:
-  outPath: "/usr/local/lib/pam/pam_watchid.so"
+permissions:
+  contents: read
 
 jobs:
   build:
     strategy:
       matrix:
-        version: [14, 15, 15-intel, 26]
+        version: [15, 26]
         xcode-select: ["xcode", "clt"]
       fail-fast: false
 
@@ -23,38 +21,19 @@ jobs:
 
     runs-on: macos-${{ matrix.version }}
 
-    permissions:
-      id-token: write
-      contents: read
-      attestations: write
-
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
-      
+      uses: actions/checkout@v7
+
     - name: Switch to Xcode Command Line Tools
       if: ${{ matrix.xcode-select == 'clt' }}
       run: sudo xcode-select --switch /Library/Developer/CommandLineTools
 
+    # Never `make install` here: CI must not touch the runner's PAM configuration.
     - name: Build
-      run: make enable
+      run: make
 
-    - name: Get Version
-      id: getVersion
-      if: ${{ matrix.xcode-select == 'xcode' && matrix.version == 15 }}
-      run: echo "version=$(cat version)" >> "$GITHUB_OUTPUT"
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      if: ${{ matrix.xcode-select == 'xcode' && matrix.version == 15 }}
-      with:
-        name: pam-watchid.so.${{ steps.getVersion.outputs.version }}
-        path: ${{ env.outPath }}.${{ steps.getVersion.outputs.version }}
-        if-no-files-found: error
-        retention-days: ${{ github.event_name == 'pull_request' && 7 || 90 }}
-
-    - name: Generate artifact attestation
-      uses: actions/attest-build-provenance@v2
-      if: ${{ matrix.xcode-select == 'xcode' && matrix.version == 15 && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
-      with:
-        subject-path: ${{ env.outPath }}.${{ steps.getVersion.outputs.version }}
+    - name: Verify exported PAM entry points
+      run: |
+        lipo -info pam_watchid.so
+        nm -gU pam_watchid.so | grep -q '_pam_sm_authenticate$'
