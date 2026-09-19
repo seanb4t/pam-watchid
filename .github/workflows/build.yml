@@ -30,8 +30,8 @@ jobs:
       run: sudo xcode-select --switch /Library/Developer/CommandLineTools
 
     # Never `make install` here: CI must not touch the runner's PAM configuration.
-    - name: Build
-      run: make
+    - name: Build and check
+      run: make check
 
     - name: Verify exported PAM entry points
       run: |

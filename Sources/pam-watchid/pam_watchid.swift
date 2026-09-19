@@ -1,4 +1,5 @@
 import LocalAuthentication
+import SystemConfiguration
 
 // MARK: (Re)define PAM constants here so we don't need to import .h files.
 
@@ -6,6 +7,8 @@ private let PAM_SUCCESS = CInt(0)
 private let PAM_AUTH_ERR = CInt(9)
 private let PAM_IGNORE = CInt(25)
 private let PAM_SILENT = CInt(bitPattern: 0x80000000)
+private let PAM_USER = CInt(2)
+private let PAM_TTY = CInt(3)
 private let DEFAULT_REASON = "perform an action that requires authentication"
 
 public typealias vchar = UnsafePointer<UnsafeMutablePointer<CChar>>
@@ -17,6 +20,10 @@ public typealias pam_handle_t = UnsafeRawPointer?
 public func pam_sm_authenticate(pamh: pam_handle_t, flags: CInt, argc: CInt, argv: vchar) -> CInt {
     let sudoArguments = ProcessInfo.processInfo.arguments
     if sudoArguments.contains("-A") || sudoArguments.contains("--askpass") {
+        return PAM_IGNORE
+    }
+
+    if shouldSkip(pamh: pamh) {
         return PAM_IGNORE
     }
 
@@ -76,6 +83,58 @@ private func parseArguments(argc: Int, argv: vchar) -> [String: String] {
     }
 
     return parsed
+}
+
+// MARK: Caller context
+//
+// The Watch prompt appears on the console, whoever asked for it. Skipping (PAM_IGNORE) is
+// always safe: the chain moves on to the password. So when the context is unclear, skip.
+
+/// Decides, before any UI, whether this request should skip the Watch entirely.
+///
+/// Context available here:
+///   pamItem(pamh, PAM_USER)   the user sudo is authenticating (the invoker)
+///   pamItem(pamh, PAM_TTY)    the invoker's terminal; nil or "" when there is none
+///   consoleUID()              uid logged in at the Mac's screen; nil at the login window
+///   uid(of:)                  a user name's uid; nil when unknown
+///   getenv("SSH_TTY"), getenv("SSH_CONNECTION")
+private func shouldSkip(pamh: pam_handle_t) -> Bool {
+    if getenv("SSH_TTY") != nil || getenv("SSH_CONNECTION") != nil {
+        return true
+    }
+    guard let tty = pamItem(pamh, PAM_TTY), !tty.isEmpty,
+          let user = pamItem(pamh, PAM_USER), let userUID = uid(of: user),
+          let console = consoleUID() else {
+        return true
+    }
+    return userUID != console
+}
+
+private typealias PamGetItem = @convention(c) (pam_handle_t, CInt, UnsafeMutablePointer<UnsafeRawPointer?>) -> CInt
+
+/// libpam is already loaded by whichever process loaded this module, so resolve
+/// pam_get_item at runtime instead of linking against it.
+private let pamGetItemFunction: PamGetItem? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "pam_get_item")
+    .map { unsafeBitCast($0, to: PamGetItem.self) }
+
+/// A string-valued PAM item, or nil when it is unset or cannot be read.
+private func pamItem(_ pamh: pam_handle_t, _ item: CInt) -> String? {
+    guard let pamh, let pamGetItemFunction else { return nil }
+    var value: UnsafeRawPointer?
+    guard pamGetItemFunction(pamh, item, &value) == PAM_SUCCESS, let value else { return nil }
+    return String(cString: value.assumingMemoryBound(to: CChar.self))
+}
+
+private func consoleUID() -> uid_t? {
+    var uid: uid_t = 0
+    guard let name = SCDynamicStoreCopyConsoleUser(nil, &uid, nil) as String?, name != "loginwindow" else {
+        return nil
+    }
+    return uid
+}
+
+private func uid(of user: String) -> uid_t? {
+    getpwnam(user).map { $0.pointee.pw_uid }
 }
 
 private extension LAPolicy {

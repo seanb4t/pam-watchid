@@ -20,9 +20,15 @@ else
 	cp .build/release/libpam-watchid.dylib $(LIBRARY_NAME)
 endif
 
+# Guard regression check: every case must be skipped (PAM_IGNORE) before any prompt.
+# Runs as the invoking user and needs no change to /etc/pam.d.
+check: all
+	cc -Wall -Werror -o guard_check Tests/guard_check.c -lpam
+	./guard_check ./$(LIBRARY_NAME)
+
 # Installs the module only; wiring it into /etc/pam.d/sudo_local is left to the caller.
 install: all
 	sudo mkdir -p $(LIBRARY_DIR)
 	sudo install -o root -g wheel -m 444 $(LIBRARY_NAME) $(LIBRARY_PATH).$(VERSION)
 
-.PHONY: all install
+.PHONY: all check install
